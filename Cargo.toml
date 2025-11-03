@@ -1,0 +1,13 @@
+[package]
+name = "search-rs"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "search"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3"
+
+[dependencies]
