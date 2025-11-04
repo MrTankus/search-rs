@@ -62,11 +62,14 @@ impl Search {
 
     pub fn search(&self) -> Result<(), SearchError> {
         if self.config.path.exists() {
-            if self.config.path.is_file() {
-                self.search_in_file()
+            let matches = if self.config.path.is_file() {
+                self.search_in_file()?
             } else {
-                self.search_in_dir()
-            }
+                self.search_in_dir()?
+            };
+
+            matches.iter().for_each(|line| println!("{}", line));
+            Ok(())
         } else {
             Err(SearchError::PathNotFound(self.config.path.display().to_string()))
         }
@@ -80,17 +83,16 @@ impl Search {
         }
     }
 
-    fn search_in_file(&self) -> Result<(), SearchError> {
+    fn search_in_file(&self) -> Result<Vec<String>, SearchError> {
         let content = std::fs::read_to_string(&self.config.path).map_err(SearchError::ReadError)?;
-        for line in content.lines() {
-            if self.pattern_match(line) {
-                println!("{}", line);
-            }
-        }
-        Ok(())
+        let matches = content.lines()
+            .filter(|line| self.pattern_match(line))
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        Ok(matches)
     }
 
-    fn search_in_dir(&self) -> Result<(), SearchError> {
+    fn search_in_dir(&self) -> Result<Vec<String>, SearchError> {
         todo!("Implement searching recursively on dir")
     }
 }
@@ -108,49 +110,51 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    #[test]
-    fn test_search_should_not_fail() {
+    fn _setup_tmp_file(lines: Vec<&str>) -> NamedTempFile {
         let mut tmp_file = NamedTempFile::new().unwrap();
-        writeln!(tmp_file, "This is the first line").unwrap();
-        writeln!(tmp_file, "This is the second line with the hello world phrase in it").unwrap();
-        writeln!(tmp_file, "This is the last line - nothing special about it").unwrap();
-
-        let config_args = vec![
-            "world".to_string(),
-            tmp_file.path().to_str().unwrap().to_string(),
-        ];
-        let search = Search::new(Config::init(config_args).unwrap());
-        search.search().unwrap()
+        for line in lines {
+            writeln!(tmp_file, "{}", line).unwrap();
+        }
+        tmp_file
     }
 
     #[test]
     fn test_search_case_sensitive_patter_match() {
+        let _tmp_file = _setup_tmp_file(vec![
+            "This is the first line",
+            "This is the second line with the hello world phrase in it",
+            "He's got the whole worLd in his hands",
+            "This is the last line - nothing special about it"
+        ]);
         let config_args = vec![
             "world".to_string(),
-            "".to_string(),
+            _tmp_file.path().display().to_string(),
         ];
 
         let search = Search::new(Config::init(config_args).unwrap());
-        assert!(search.pattern_match("hello world"));
-        assert!(search.pattern_match("he's got the whole world in his hand"));
-        assert!(!search.pattern_match("I see trees of green, red roses too"));
-        assert!(!search.pattern_match("Hello World"));
-        assert!(!search.pattern_match("He's Got The Whole worLd In His Hand"));
+        let matches = search.search_in_file().unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches,  vec!["This is the second line with the hello world phrase in it"]);
     }
 
     #[test]
     fn test_search_case_insensitive_pattern_match() {
+        let _tmp_file = _setup_tmp_file(vec![
+            "This is the first line",
+            "This is the second line with the hello world phrase in it",
+            "He's got the whole worLd in his hands",
+            "This is the last line - nothing special about it"
+        ]);
+
         let config_args = vec![
             "world".to_string(),
-            "".to_string(),
+            _tmp_file.path().display().to_string(),
             "-i".to_string(),
         ];
 
         let search = Search::new(Config::init(config_args).unwrap());
-        assert!(search.pattern_match("hello world"));
-        assert!(search.pattern_match("he's got the whole world in his hand"));
-        assert!(!search.pattern_match("I see trees of green, red roses too"));
-        assert!(search.pattern_match("Hello World"));
-        assert!(search.pattern_match("He's Got The Whole woRlD In His Hand"));
+        let matches = search.search_in_file().unwrap();
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches,  vec!["This is the second line with the hello world phrase in it", "He's got the whole worLd in his hands"]);
     }
 }
