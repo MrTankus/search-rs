@@ -29,7 +29,7 @@ impl Display for SearchError {
 pub enum FindAction {
     PrintLine,
     PrintFileName,
-    Boolean
+    Boolean,
 }
 
 impl FromStr for FindAction {
@@ -39,7 +39,10 @@ impl FromStr for FindAction {
             "print" => Ok(FindAction::PrintLine),
             "file" => Ok(FindAction::PrintFileName),
             "boolean" => Ok(FindAction::Boolean),
-            _ => Err(SearchError::InitializationError(format!("action {} is invalid", s.to_string()))),
+            _ => Err(SearchError::InitializationError(format!(
+                "action {} is invalid",
+                s.to_string()
+            ))),
         }
     }
 }
@@ -54,13 +57,17 @@ pub struct Config {
 impl Config {
     pub fn init(args: Vec<String>) -> Result<Self, SearchError> {
         if args.len() < 2 {
-            Err(SearchError::InitializationError("Not enough arguments".to_string()))
+            Err(SearchError::InitializationError(
+                "Not enough arguments".to_string(),
+            ))
         } else {
             let mut config = Config {
-                path:  PathBuf::from(args[1].clone()),
+                path: PathBuf::from(args[1].clone()),
                 pattern: args[0].clone(),
                 case_insensitive: args.get(2).map_or(false, |s| s == "-i"),
-                action: args.get(3).map_or(FindAction::PrintLine, |s| FindAction::from_str(&s).unwrap()),
+                action: args
+                    .get(3)
+                    .map_or(FindAction::PrintLine, |s| FindAction::from_str(&s).unwrap()),
             };
             if config.case_insensitive {
                 config.pattern = config.pattern.to_lowercase();
@@ -76,9 +83,7 @@ pub struct Search {
 
 impl Search {
     pub fn new(config: Config) -> Self {
-        Search {
-            config,
-        }
+        Search { config }
     }
 
     pub fn search(&self) -> Result<(), SearchError> {
@@ -91,11 +96,13 @@ impl Search {
             match self.config.action {
                 FindAction::PrintLine => matches.iter().for_each(|line| println!("{}", line)),
                 FindAction::PrintFileName => println!("{}", self.config.path.display()),
-                _ => ()
+                _ => (),
             }
             Ok(())
         } else {
-            Err(SearchError::PathNotFound(self.config.path.display().to_string()))
+            Err(SearchError::PathNotFound(
+                self.config.path.display().to_string(),
+            ))
         }
     }
 
@@ -109,7 +116,8 @@ impl Search {
 
     fn search_in_file(&self) -> Result<Vec<String>, SearchError> {
         let content = std::fs::read_to_string(&self.config.path).map_err(SearchError::ReadError)?;
-        let matches = content.lines()
+        let matches = content
+            .lines()
             .filter(|line| self.pattern_match(line))
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
@@ -127,41 +135,61 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    fn _setup_tmp_file(lines: Vec<&str>) -> NamedTempFile {
-        let mut tmp_file = NamedTempFile::new().unwrap();
+    enum SearchTestError {
+        TestSetupError(std::io::Error),
+    }
+
+    impl Debug for SearchTestError {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Display::fmt(&self, f)
+        }
+    }
+
+    impl Display for SearchTestError {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            match self {
+                SearchTestError::TestSetupError(io_error) => write!(f, "{}", io_error),
+            }
+        }
+    }
+
+    fn _setup_tmp_file(lines: Vec<&str>) -> Result<NamedTempFile, SearchTestError> {
+        let mut tmp_file =
+            NamedTempFile::new().map_err(|err| SearchTestError::TestSetupError(err))?;
         for line in lines {
             writeln!(tmp_file, "{}", line).unwrap();
         }
-        tmp_file
+        Ok(tmp_file)
     }
 
     #[test]
-    fn test_search_case_sensitive_patter_match() {
+    fn test_search_case_sensitive_patter_match() -> Result<(), SearchTestError> {
         let _tmp_file = _setup_tmp_file(vec![
             "This is the first line",
             "This is the second line with the hello world phrase in it",
             "He's got the whole worLd in his hands",
-            "This is the last line - nothing special about it"
-        ]);
-        let config_args = vec![
-            "world".to_string(),
-            _tmp_file.path().display().to_string(),
-        ];
+            "This is the last line - nothing special about it",
+        ])?;
+        let config_args = vec!["world".to_string(), _tmp_file.path().display().to_string()];
 
         let search = Search::new(Config::init(config_args).unwrap());
         let matches = search.search_in_file().unwrap();
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches,  vec!["This is the second line with the hello world phrase in it"]);
+        assert_eq!(
+            matches,
+            vec!["This is the second line with the hello world phrase in it"]
+        );
+        Ok(())
     }
 
     #[test]
-    fn test_search_case_insensitive_pattern_match() {
+    fn test_search_case_insensitive_pattern_match() -> Result<(), SearchTestError> {
         let _tmp_file = _setup_tmp_file(vec![
             "This is the first line",
             "This is the second line with the hello world phrase in it",
             "He's got the whole worLd in his hands",
-            "This is the last line - nothing special about it"
-        ]);
+            "This is the last line - nothing special about it",
+        ])?;
 
         let config_args = vec![
             "world".to_string(),
@@ -172,6 +200,13 @@ mod tests {
         let search = Search::new(Config::init(config_args).unwrap());
         let matches = search.search_in_file().unwrap();
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches,  vec!["This is the second line with the hello world phrase in it", "He's got the whole worLd in his hands"]);
+        assert_eq!(
+            matches,
+            vec![
+                "This is the second line with the hello world phrase in it",
+                "He's got the whole worLd in his hands"
+            ]
+        );
+        Ok(())
     }
 }
