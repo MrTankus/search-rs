@@ -63,13 +63,14 @@ fn benchmark_small_file_low_freq(group: &mut BenchmarkGroup<WallTime>) {
 
     group.bench_function("benchmark_small_file_low_freq", |b| {
         b.iter(|| {
-            let config = Config::init(vec![
+            let config = Config::init(
+                file_path.to_path_buf(),
                 MATCH_TERM.to_string(),
-                file_path.display().to_string(),
-                "".to_string(),
-                "boolean".to_string(),
-            ])
-            .unwrap();
+                Some(false),
+                Some(search_rs::FindAction::Boolean),
+                None,
+                None,
+            );
             let search = Search::new(config);
             search.search().unwrap();
         })
@@ -81,13 +82,14 @@ fn benchmark_small_file_high_freq(group: &mut BenchmarkGroup<WallTime>) {
     let file_path = tmp_file.path().to_path_buf();
     group.bench_function("benchmark_small_file_high_freq", |b| {
         b.iter(|| {
-            let config = Config::init(vec![
+            let config = Config::init(
+                file_path.to_path_buf(),
                 MATCH_TERM.to_string(),
-                file_path.display().to_string(),
-                "".to_string(),
-                "boolean".to_string(),
-            ])
-            .unwrap();
+                Some(false),
+                Some(search_rs::FindAction::Boolean),
+                None,
+                None,
+            );
             let search = Search::new(config);
             search.search().unwrap();
         })
@@ -100,13 +102,14 @@ fn benchmark_small_file_low_freq_case_insensitive(group: &mut BenchmarkGroup<Wal
 
     group.bench_function("benchmark_small_file_low_freq_case_insensitive", |b| {
         b.iter(|| {
-            let config = Config::init(vec![
+            let config = Config::init(
+                file_path.to_path_buf(),
                 MATCH_TERM.to_string(),
-                file_path.display().to_string(),
-                "-i".to_string(),
-                "boolean".to_string(),
-            ])
-            .unwrap();
+                Some(true),
+                Some(search_rs::FindAction::Boolean),
+                None,
+                None,
+            );
             let search = Search::new(config);
             search.search().unwrap();
         })
@@ -121,13 +124,14 @@ fn benchmark_large_file_low_freq(group: &mut BenchmarkGroup<WallTime>) {
 
     group.bench_function("benchmark_larg_file_low_freq", |b| {
         b.iter(|| {
-            let config = Config::init(vec![
+            let config = Config::init(
+                file_path.to_path_buf(),
                 MATCH_TERM.to_string(),
-                file_path.display().to_string(),
-                "".to_string(),
-                "boolean".to_string(),
-            ])
-            .unwrap();
+                Some(false),
+                Some(search_rs::FindAction::Boolean),
+                None,
+                None,
+            );
             let search = Search::new(config);
             search.search().unwrap();
         })

@@ -1,6 +1,10 @@
 use std::fmt::{Debug, Display, Formatter};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 
 pub enum SearchError {
     PathNotFound(String),
@@ -52,27 +56,34 @@ pub struct Config {
     pattern: String,
     case_insensitive: bool,
     action: FindAction,
+    chunk_size: usize,
+    parallelism: usize,
 }
 
 impl Config {
-    pub fn init(args: Vec<String>) -> Result<Self, SearchError> {
-        if args.len() < 2 {
-            Err(SearchError::InitializationError(
-                "Not enough arguments".to_string(),
-            ))
-        } else {
-            let mut config = Config {
-                path: PathBuf::from(args[1].clone()),
-                pattern: args[0].clone(),
-                case_insensitive: args.get(2).map_or(false, |s| s == "-i"),
-                action: args
-                    .get(3)
-                    .map_or(FindAction::PrintLine, |s| FindAction::from_str(&s).unwrap()),
-            };
-            if config.case_insensitive {
-                config.pattern = config.pattern.to_lowercase();
+    pub fn init(
+        path: PathBuf,
+        pattern: String,
+        case_insensitive: Option<bool>,
+        action: Option<FindAction>,
+        chunk_size: Option<usize>,
+        parallelism: Option<usize>,
+    ) -> Config {
+        let mut final_pattern = pattern;
+        let mut ci = false;
+        if let Some(i) = case_insensitive {
+            if i {
+                final_pattern = final_pattern.to_lowercase();
             }
-            Ok(config)
+            ci = i;
+        }
+        Config {
+            path: path,
+            pattern: final_pattern,
+            case_insensitive: ci,
+            action: action.unwrap_or(FindAction::PrintLine),
+            chunk_size: chunk_size.unwrap_or(1000),
+            parallelism: parallelism.unwrap_or(1),
         }
     }
 }
@@ -115,17 +126,138 @@ impl Search {
     }
 
     fn search_in_file(&self) -> Result<Vec<String>, SearchError> {
-        let content = std::fs::read_to_string(&self.config.path).map_err(SearchError::ReadError)?;
-        let matches = content
-            .lines()
-            .filter(|line| self.pattern_match(line))
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>();
-        Ok(matches)
+        if self.config.parallelism <= 1 {
+            // Sequential processing - simple and efficient for single thread
+            let file = File::open(&self.config.path).map_err(SearchError::ReadError)?;
+            let reader = BufReader::new(file);
+
+            let matches: Vec<String> = reader
+                .lines()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(SearchError::ReadError)?
+                .iter()
+                .filter(|line| self.pattern_match(line))
+                .map(|s| s.to_string())
+                .collect();
+
+            return Ok(matches);
+        }
+
+        // Parallel processing with worker pool
+        let num_workers = self.config.parallelism;
+
+        // Bounded channel for chunks - blocks reader when all workers are busy
+        let (chunk_tx, chunk_rx) = mpsc::sync_channel::<Vec<String>>(num_workers);
+        let chunk_rx = Arc::new(Mutex::new(chunk_rx));
+
+        // Unbounded channel for results from workers
+        let (result_tx, result_rx) = mpsc::channel::<Vec<String>>();
+
+        // Spawn worker threads
+        let mut handles = Vec::new();
+        for _ in 0..num_workers {
+            let chunk_rx = Arc::clone(&chunk_rx);
+            let result_tx = result_tx.clone();
+            let pattern = self.config.pattern.clone();
+            let case_insensitive = self.config.case_insensitive;
+
+            let handle = thread::spawn(move || {
+                loop {
+                    let chunk = {
+                        let receiver = chunk_rx.lock().unwrap();
+                        receiver.recv()
+                    };
+
+                    match chunk {
+                        Ok(chunk) => {
+                            let matches: Vec<String> = chunk
+                                .iter()
+                                .filter(|line| {
+                                    if case_insensitive {
+                                        line.to_lowercase().contains(pattern.as_str())
+                                    } else {
+                                        line.contains(pattern.as_str())
+                                    }
+                                })
+                                .map(|s| s.to_string())
+                                .collect();
+
+                            if !matches.is_empty() {
+                                let _ = result_tx.send(matches);
+                            }
+                        }
+                        Err(_) => break, // Channel closed, exit worker
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Drop original sender so workers can finish when reader is done
+        drop(result_tx);
+
+        // Reader thread - reads file and sends chunks
+        let path = self.config.path.clone();
+        let chunk_size = self.config.chunk_size;
+        let reader_handle = thread::spawn(move || -> Result<(), SearchError> {
+            let file = File::open(&path).map_err(SearchError::ReadError)?;
+            let reader = BufReader::new(file);
+
+            let mut chunk = Vec::with_capacity(chunk_size);
+            for line_result in reader.lines() {
+                let line = line_result.map_err(SearchError::ReadError)?;
+                chunk.push(line);
+
+                if chunk.len() >= chunk_size {
+                    // This will block if all workers are busy - creating backpressure
+                    if chunk_tx.send(chunk.clone()).is_err() {
+                        break; // Channel closed, stop reading
+                    }
+                    chunk.clear();
+                }
+            }
+
+            // Send remaining lines
+            if !chunk.is_empty() {
+                let _ = chunk_tx.send(chunk);
+            }
+
+            // Drop sender to signal workers we're done sending chunks
+            drop(chunk_tx);
+
+            Ok(())
+        });
+
+        // Wait for reader to finish
+        reader_handle.join().unwrap()?;
+
+        // Wait for all workers to finish
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Collect all results
+        let mut all_matches = Vec::new();
+        while let Ok(matches) = result_rx.recv() {
+            all_matches.extend(matches);
+        }
+
+        Ok(all_matches)
     }
 
     fn search_in_dir(&self) -> Result<Vec<String>, SearchError> {
-        todo!("Implement searching recursively on dir")
+        let content = self.config.path.read_dir().map_err(SearchError::ReadError)?;
+        let mut matches = Vec::new();
+        for entry in content {
+            // TODO - this is the wrong way. We want to skip entries with errors, not fail the whole search.
+            let entry_type = entry.map_err(|e| SearchError::ReadError(e))?.file_type().map_err(|e| SearchError::ReadError(e))?;
+            if entry_type.is_file() {
+                matches.extend(self.search_in_file()?);
+            } else if entry_type.is_dir() {
+                matches.extend(self.search_in_dir()?);
+            }
+        }
+        Ok(matches)
     }
 }
 
@@ -170,9 +302,16 @@ mod tests {
             "He's got the whole worLd in his hands",
             "This is the last line - nothing special about it",
         ])?;
-        let config_args = vec!["world".to_string(), _tmp_file.path().display().to_string()];
 
-        let search = Search::new(Config::init(config_args).unwrap());
+        let config = Config::init(
+            _tmp_file.path().to_path_buf(),
+            "world".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let search = Search::new(config);
         let matches = search.search_in_file().unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(
@@ -190,14 +329,15 @@ mod tests {
             "He's got the whole worLd in his hands",
             "This is the last line - nothing special about it",
         ])?;
-
-        let config_args = vec![
+        let config = Config::init(
+            _tmp_file.path().to_path_buf(),
             "world".to_string(),
-            _tmp_file.path().display().to_string(),
-            "-i".to_string(),
-        ];
-
-        let search = Search::new(Config::init(config_args).unwrap());
+            Some(true),
+            None,
+            None,
+            None,
+        );
+        let search = Search::new(config);
         let matches = search.search_in_file().unwrap();
         assert_eq!(matches.len(), 2);
         assert_eq!(
