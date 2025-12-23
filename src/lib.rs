@@ -104,6 +104,7 @@ impl Search {
             } else {
                 self.search_in_dir()?
             };
+            // TODO - why here? we can run out of memory... its just plain inefficient
             match self.config.action {
                 FindAction::PrintLine => matches.iter().for_each(|line| println!("{}", line)),
                 FindAction::PrintFileName => println!("{}", self.config.path.display()),
@@ -266,6 +267,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+    use tempfile::TempDir;
 
     enum SearchTestError {
         TestSetupError(std::io::Error),
@@ -292,6 +294,15 @@ mod tests {
             writeln!(tmp_file, "{}", line).unwrap();
         }
         Ok(tmp_file)
+    }
+
+    fn _setup_tmp_file_in_dir(lines: Vec<&str>) -> Result<TempDir, SearchTestError> {
+        let tmp_dir = TempDir::new().map_err(|err| SearchTestError::TestSetupError(err))?;
+        let mut tmp_file = NamedTempFile::new_in(&tmp_dir).map_err(|err| SearchTestError::TestSetupError(err))?;
+        for line in lines {
+            writeln!(tmp_file, "{}", line).unwrap();
+        }
+        Ok(tmp_dir)
     }
 
     #[test]
@@ -339,6 +350,37 @@ mod tests {
         );
         let search = Search::new(config);
         let matches = search.search_in_file().unwrap();
+        assert_eq!(matches.len(), 2);
+        assert_eq!(
+            matches,
+            vec![
+                "This is the second line with the hello world phrase in it",
+                "He's got the whole worLd in his hands"
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore]
+    fn test_search_in_dir() -> Result<(), SearchTestError> {
+        let _tmp_dir = _setup_tmp_file_in_dir(vec![
+            "This is the first line",
+            "This is the second line with the hello world phrase in it",
+            "He's got the whole worLd in his hands",
+            "This is the last line - nothing special about it",
+        ])?;
+
+        let config = Config::init(
+            _tmp_dir.path().to_path_buf(),
+            "world".to_string(),
+            Some(true),
+            None,
+            None,
+            None,
+        );
+        let search = Search::new(config);
+        let matches = search.search_in_dir().unwrap();
         assert_eq!(matches.len(), 2);
         assert_eq!(
             matches,
